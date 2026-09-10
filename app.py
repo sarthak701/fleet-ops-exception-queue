@@ -11,11 +11,25 @@ def get_data():
 
 df, excl = get_data()
 
-st.title("Fleet Ops — Exception Queue")
-st.caption("Built for Meera's team. This is not a dashboard replacement — it's the list of things that actually need a decision today.")
+# Classify fleet type from the normalized vendor name
+df["Fleet_type"] = df["Vendor_norm"].apply(
+    lambda v: "In-House" if v == "InHouse Fleet" else "Third-Party"
+)
 
+st.title("Fleet Ops — Exception Queue")
+st.caption("List of things that actually need a decision today.")
+
+# --- Fleet type toggle ---
+fleet_choice = st.radio(
+    "Fleet",
+    ["All", "In-House", "Third-Party"],
+    horizontal=True,
+)
+if fleet_choice != "All":
+    df = df[df["Fleet_type"] == fleet_choice]
 # --- Top-level numbers ---
 col1, col2, col3, col4 = st.columns(4)
+
 col1.metric("Legs analyzed", len(df))
 col2.metric("Late (any delay)", f"{df['Is_late'].sum()} ({df['Is_late'].mean()*100:.0f}%)")
 col3.metric("Severe (30+ min)", int(df['Is_severe'].sum()))
@@ -39,18 +53,19 @@ def flag_reason(row):
     return ", ".join(reasons)
 
 queue["Issue"] = queue.apply(flag_reason, axis=1)
-queue["Owner"] = ""     # placeholder until Q6 is answered
 queue["Status"] = "Open"
 st.subheader("Site Summary")
 
 site_summary = df.groupby("Site_for_leg").agg(
     Total_legs=("Is_late", "count"),
     Late_pct=("Is_late", "mean"),
+    Severe_pct=("Is_severe", "mean"),
     Severe_count=("Is_severe", "sum"),
     Driver_delay_count=("Is_driver_delay_first_pickup", "sum"),
 ).reset_index()
 
 site_summary["Late_pct"] = (site_summary["Late_pct"] * 100).round(1)
+site_summary["Severe_pct"] = (site_summary["Severe_pct"] * 100).round(1)
 site_summary = site_summary.sort_values("Severe_count", ascending=False)
 
 st.dataframe(
@@ -58,8 +73,46 @@ st.dataframe(
         "Site_for_leg": "Site",
         "Total_legs": "Total Legs",
         "Late_pct": "Late %",
+        "Severe_pct": "Severe %",
         "Severe_count": "Severe Delays",
         "Driver_delay_count": "Driver Delays (1st pickup)",
+    }),
+    use_container_width=True,
+    hide_index=True,
+)
+st.subheader("Vendor Summary")
+
+driver_delay_avg = (
+    df[df["Is_driver_delay_first_pickup"]]
+    .groupby("Vendor_norm")["Start_delay_minutes"]
+    .mean()
+    .rename("Avg_driver_delay")
+)
+
+vendor_summary = df.groupby("Vendor_norm").agg(
+    Total_legs=("Is_late", "count"),
+    Late_pct=("Is_late", "mean"),
+    Severe_pct=("Is_severe", "mean"),
+    Severe_count=("Is_severe", "sum"),
+    Driver_delay_count=("Is_driver_delay_first_pickup", "sum"),
+).reset_index()
+
+vendor_summary = vendor_summary.merge(driver_delay_avg, left_on="Vendor_norm", right_index=True, how="left")
+
+vendor_summary["Late_pct"] = (vendor_summary["Late_pct"] * 100).round(1)
+vendor_summary["Severe_pct"] = (vendor_summary["Severe_pct"] * 100).round(1)
+vendor_summary["Avg_driver_delay"] = vendor_summary["Avg_driver_delay"].round(1)
+vendor_summary = vendor_summary.sort_values("Severe_count", ascending=False)
+
+st.dataframe(
+    vendor_summary.rename(columns={
+        "Vendor_norm": "Vendor",
+        "Total_legs": "Total Legs",
+        "Late_pct": "Late %",
+        "Severe_pct": "Severe %",
+        "Severe_count": "Severe Delays",
+        "Driver_delay_count": "Driver Delays (1st pickup)",
+        "Avg_driver_delay": "Avg Driver Delay (min)",
     }),
     use_container_width=True,
     hide_index=True,
@@ -88,8 +141,9 @@ st.write(f"{len(filtered)} open items")
 
 display_cols = [
     "Base Date", "Cab ID", "Vendor_norm", "Site_for_leg",
-    "Direction", "Delay_minutes", "Issue", "Owner", "Status"
+    "Direction", "Delay_minutes", "Issue", "Status"
 ]
+st.caption("Vendors with under ~50 legs — treat these rates as indicative, not conclusive. Small sample sizes make a single bad day look like a pattern.")
 st.dataframe(
     filtered[display_cols].sort_values("Delay_minutes", ascending=False),
     use_container_width=True,
